@@ -295,25 +295,6 @@ def generate_html_report(path: str, data: bytes, out_path: str) -> None:
     html_parts.append(f'<tr><th>SHA256</th><td>{meta["sha256"]}</td></tr>')
     html_parts.append('</table>')
 
-    # Text preview
-    html_parts.append('<h2>文本预览 ✍️</h2>')
-    if text_preview:
-        # if json-like then pretty
-        if is_json_like(text_preview):
-            pretty = pretty_json(text_preview)
-            html_parts.append('<pre>' + esc(pretty) + '</pre>')
-        else:
-            html_parts.append('<pre>' + esc(text_preview[:MAX_TEXT_DISPLAY]) + '</pre>')
-            if len(text_preview) > MAX_TEXT_DISPLAY:
-                html_parts.append('<p class="m">(文本被截断，太大了)</p>')
-        if enc:
-            html_parts.append(f'<p class="m">使用编码: {esc(enc)}</p>')
-    else:
-        html_parts.append('<p class="m">未检测到可直接作为文本显示的内容。</p>')
-
-    # Removed '可打印字符串' and 'Hex Dump' sections to declutter report
-    html_parts.append('<p class="m">提示: 已移除 Hex Dump 与可打印字符串以减少噪音。</p>')
-
     # Zip contents
     if zip_entries:
         html_parts.append('<h2>ZIP 嵌套文件 📦</h2>')
