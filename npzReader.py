@@ -7,7 +7,7 @@ nzp 阅读器
 建议安装numpy pillow以支持图片渲染
 
 用法:
-    python dcmReader.py path/to/file.nzp -o output.html --open
+    python npzReader.py path/to/file.nzp -o output.html --open
 
 """
 
