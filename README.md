@@ -6,3 +6,4 @@
 - [nzp 3D 查看器](npz_to_web.py)
 - [xlsx csv json 转换器](npz_to_web.py)
 - [png series/nii/npz series/dcm series 转换器](image_converter.py)
+- [cpp写的 npz2png 转换器](image_converter.py) *此项目在非macOS上编译可能有些麻烦...
