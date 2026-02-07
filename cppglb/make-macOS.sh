@@ -1,0 +1,1 @@
+clang++ -std=c++17 -O2 cppglb/npz_to_glb.cpp cnpy.cpp -o cppglb/npz_to_glb -lz
