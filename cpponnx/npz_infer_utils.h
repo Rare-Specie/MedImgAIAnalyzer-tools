@@ -195,6 +195,101 @@ inline void SavePredMaskNpz(const std::string &out_npz, const std::vector<int64_
   cnpy::npz_save(out_npz, "pred_mask", mask.data(), shape, "w");
 }
 
+inline void SaveNpzWithSameKeys(const std::string &src_npz,
+                                const std::string &out_npz,
+                                const std::vector<int64_t> &pred,
+                                int pred_h,
+                                int pred_w,
+                                const std::string &label_key = "label") {
+  cnpy::npz_t npz = cnpy::npz_load(src_npz);
+  bool first = true;
+  for (const auto &kv : npz) {
+    const std::string &key = kv.first;
+    const cnpy::NpyArray &arr = kv.second;
+    const std::string mode = first ? "w" : "a";
+    first = false;
+
+    if (key == label_key) {
+      if (arr.shape.size() != 2) {
+        throw std::runtime_error("label应为2D数组");
+      }
+      const size_t expected = arr.shape[0] * arr.shape[1];
+      if (pred.size() != expected && pred.size() != static_cast<size_t>(pred_h * pred_w)) {
+        throw std::runtime_error("pred与label大小不一致");
+      }
+      std::vector<size_t> shape = {static_cast<size_t>(pred_h), static_cast<size_t>(pred_w)};
+      switch (arr.word_size) {
+        case sizeof(double): {
+          std::vector<double> out(pred.size());
+          for (size_t i = 0; i < pred.size(); ++i) out[i] = static_cast<double>(pred[i]);
+          cnpy::npz_save(out_npz, key, out.data(), shape, mode);
+          break;
+        }
+        case sizeof(float): {
+          std::vector<float> out(pred.size());
+          for (size_t i = 0; i < pred.size(); ++i) out[i] = static_cast<float>(pred[i]);
+          cnpy::npz_save(out_npz, key, out.data(), shape, mode);
+          break;
+        }
+        case sizeof(uint16_t): {
+          std::vector<uint16_t> out(pred.size());
+          for (size_t i = 0; i < pred.size(); ++i) out[i] = static_cast<uint16_t>(pred[i]);
+          cnpy::npz_save(out_npz, key, out.data(), shape, mode);
+          break;
+        }
+        case sizeof(uint8_t): {
+          std::vector<uint8_t> out(pred.size());
+          for (size_t i = 0; i < pred.size(); ++i) out[i] = static_cast<uint8_t>(pred[i]);
+          cnpy::npz_save(out_npz, key, out.data(), shape, mode);
+          break;
+        }
+        default:
+          throw std::runtime_error("不支持的label数据类型");
+      }
+      continue;
+    }
+
+    switch (arr.word_size) {
+      case sizeof(double):
+        if (arr.fortran_order) {
+          cnpy::npz_save_fortran(out_npz, key, arr.data<double>(), arr.shape, mode);
+        } else {
+          cnpy::npz_save(out_npz, key, arr.data<double>(), arr.shape, mode);
+        }
+        break;
+      case sizeof(float):
+        if (arr.fortran_order) {
+          cnpy::npz_save_fortran(out_npz, key, arr.data<float>(), arr.shape, mode);
+        } else {
+          cnpy::npz_save(out_npz, key, arr.data<float>(), arr.shape, mode);
+        }
+        break;
+      case sizeof(uint16_t):
+        if (arr.fortran_order) {
+          cnpy::npz_save_fortran(out_npz, key, arr.data<uint16_t>(), arr.shape, mode);
+        } else {
+          cnpy::npz_save(out_npz, key, arr.data<uint16_t>(), arr.shape, mode);
+        }
+        break;
+      case sizeof(uint8_t):
+        if (arr.fortran_order) {
+          cnpy::npz_save_fortran(out_npz, key, arr.data<uint8_t>(), arr.shape, mode);
+        } else {
+          cnpy::npz_save(out_npz, key, arr.data<uint8_t>(), arr.shape, mode);
+        }
+        break;
+      default:
+        throw std::runtime_error("不支持的npz数据类型");
+    }
+  }
+
+  if (npz.find(label_key) == npz.end()) {
+    std::vector<size_t> shape = {static_cast<size_t>(pred_h), static_cast<size_t>(pred_w)};
+    std::vector<int64_t> out = pred;
+    cnpy::npz_save(out_npz, label_key, out.data(), shape, first ? "w" : "a");
+  }
+}
+
 inline std::pair<double, double> EvalDiceIou(const std::vector<int64_t> &pred,
                                              const std::vector<int64_t> &label) {
   if (pred.size() != label.size()) {

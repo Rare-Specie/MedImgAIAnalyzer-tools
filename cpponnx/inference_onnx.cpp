@@ -217,7 +217,7 @@ int main(int argc, char **argv) {
               best_c = c;
             }
           }
-          pred[y * out_w + x] = (best_c > 0) ? 1 : 0;
+          pred[y * out_w + x] = best_c;
         }
       }
     }
@@ -233,7 +233,7 @@ int main(int argc, char **argv) {
 
     std::string base = std::filesystem::path(args.input).stem().string();
     std::string out_npz = (std::filesystem::path(out_dir) / ("inference_" + base + "_onnxcpp.npz")).string();
-    SavePredMaskNpz(out_npz, pred_up, args.out_size);
+    SaveNpzWithSameKeys(args.input, out_npz, pred_up, args.out_size, args.out_size);
 
     if (data.label.has_value()) {
       std::vector<double> lab = std::move(*data.label);
