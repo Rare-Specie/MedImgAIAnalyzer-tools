@@ -106,16 +106,26 @@ def to_png_base64(arr):
     return 'data:image/png;base64,' + encoded
 
 
-def overlay_base64(raw_u8, ann_bool, ann_color=(255, 0, 0), alpha=0.4):
-    """把标注以半透明颜色叠加到灰度 raw 图上，输出 base64 PNG"""
+def overlay_base64(raw_u8, ann, alpha=0.4):
+    """把标注以半透明颜色叠加到灰度 raw 图上，输出 base64 PNG。"""
     # raw_u8: 2D uint8
-    h, w = raw_u8.shape
-    rgb = np.stack([raw_u8]*3, axis=-1)
+    rgb = np.stack([raw_u8] * 3, axis=-1)
     overlay = rgb.copy().astype(np.float32)
-    mask = ann_bool.astype(bool)
-    overlay[mask, 0] = overlay[mask, 0] * (1-alpha) + ann_color[0] * alpha
-    overlay[mask, 1] = overlay[mask, 1] * (1-alpha) + ann_color[1] * alpha
-    overlay[mask, 2] = overlay[mask, 2] * (1-alpha) + ann_color[2] * alpha
+    ann = ann.astype(np.float32, copy=False)
+
+    yellow_mask = ann > 1.0
+    red_mask = (ann > 0.0) & (ann <= 1.0)
+
+    if yellow_mask.any():
+        overlay[yellow_mask, 0] = overlay[yellow_mask, 0] * (1 - alpha) + 255 * alpha
+        overlay[yellow_mask, 1] = overlay[yellow_mask, 1] * (1 - alpha) + 255 * alpha
+        overlay[yellow_mask, 2] = overlay[yellow_mask, 2] * (1 - alpha) + 0 * alpha
+
+    if red_mask.any():
+        overlay[red_mask, 0] = overlay[red_mask, 0] * (1 - alpha) + 255 * alpha
+        overlay[red_mask, 1] = overlay[red_mask, 1] * (1 - alpha) + 0 * alpha
+        overlay[red_mask, 2] = overlay[red_mask, 2] * (1 - alpha) + 0 * alpha
+
     im = Image.fromarray(overlay.astype(np.uint8), mode='RGB')
     buf = BytesIO()
     im.save(buf, format='PNG')
@@ -144,6 +154,7 @@ def main():
 
     raws = []
     anns = []
+    anns_raw = []
     shape = None
     for path in paths:
         if not os.path.exists(path):
@@ -191,12 +202,14 @@ def main():
         raws.append(raw.astype(np.float32))
         if ann is None:
             anns.append(np.zeros_like(raw, dtype=bool))
+            anns_raw.append(np.zeros_like(raw, dtype=np.float32))
         else:
-            # produce boolean mask
             if ann.dtype == bool:
                 anns.append(ann.astype(bool))
+                anns_raw.append(ann.astype(np.float32))
             else:
                 anns.append((ann > args.ann_threshold).astype(bool))
+                anns_raw.append(ann.astype(np.float32))
 
     if len(raws) == 0:
         print('没有有效切片', file=sys.stderr)
@@ -216,14 +229,28 @@ def main():
     # create per-slice base64 images
     print('生成切片图像（base64）...')
     raw_b64 = [to_png_base64(vol_raw_u8[z]) for z in range(vol_raw_u8.shape[0])]
-    overlay_b64 = [overlay_base64(vol_raw_u8[z], vol_ann[z]) for z in range(vol_raw_u8.shape[0])]
+    vol_ann_raw = np.stack(anns_raw, axis=0).astype(np.float32)
+    overlay_b64 = [overlay_base64(vol_raw_u8[z], vol_ann_raw[z]) for z in range(vol_raw_u8.shape[0])]
 
     mesh = None
     if (not args.skip_marching) and marching_cubes is not None and vol_ann.sum() > 0:
         print('计算 marching cubes 网格（可能需要一些时间）...')
-        verts, faces, normals, values = marching_cubes(vol_ann, level=0.5)
-        mesh = {'verts': verts.tolist(), 'faces': faces.tolist()}
-        print(f'网格顶点数: {len(verts)}, 面片数: {len(faces)}')
+        meshes = []
+        yellow_mask = vol_ann_raw > 1.0
+        red_mask = (vol_ann_raw > 0.0) & (vol_ann_raw <= 1.0)
+
+        if yellow_mask.any():
+            verts, faces, normals, values = marching_cubes(yellow_mask.astype(np.uint8), level=0.5)
+            meshes.append({'verts': verts.tolist(), 'faces': faces.tolist(), 'color': '#ffd400'})
+            print(f'黄色网格顶点数: {len(verts)}, 面片数: {len(faces)}')
+
+        if red_mask.any():
+            verts, faces, normals, values = marching_cubes(red_mask.astype(np.uint8), level=0.5)
+            meshes.append({'verts': verts.tolist(), 'faces': faces.tolist(), 'color': '#ff3b3b'})
+            print(f'红色网格顶点数: {len(verts)}, 面片数: {len(faces)}')
+
+        if meshes:
+            mesh = meshes
     else:
         if marching_cubes is None:
             print('skimage.measure.marching_cubes 未安装，跳过 3D 网格')
@@ -331,7 +358,7 @@ var threeContainer = document.getElementById('threeContainer');
 var show3Dbtn = document.getElementById('show3D');
 var threeStarted = false;
 show3Dbtn.addEventListener('click', function(){
-  if (!mesh){ alert('No mesh extracted (no annotation or marching_cubes missing)'); return; }
+    if (!mesh){ alert('No mesh extracted (no annotation or marching_cubes missing)'); return; }
   if (threeStarted) return;
   threeStarted = true;
   initThree(mesh);
@@ -345,24 +372,30 @@ function initThree(mesh){
   renderer.setSize(threeContainer.clientWidth, threeContainer.clientHeight);
   threeContainer.appendChild(renderer.domElement);
 
-  // build geometry
-  var geometry = new THREE.BufferGeometry();
-  var verts = new Float32Array(mesh.verts.flat());
-  var faces = new Uint32Array(mesh.faces.flat());
-  geometry.setAttribute('position', new THREE.BufferAttribute(verts, 3));
-  geometry.setIndex(new THREE.BufferAttribute(faces, 1));
-  geometry.computeVertexNormals();
+    var meshes = Array.isArray(mesh) ? mesh : [mesh];
+    var meshObjs = [];
+    var center = new THREE.Vector3(0, 0, 0);
+    var firstCenter = true;
 
-  var material = new THREE.MeshStandardMaterial({color:0xff6b6b, metalness:0.1, roughness:0.8, side:THREE.DoubleSide});
-  var meshObj = new THREE.Mesh(geometry, material);
-  // center
-  geometry.computeBoundingBox();
-  var bb = geometry.boundingBox;
-  var center = new THREE.Vector3();
-  bb.getCenter(center);
-  meshObj.position.sub(center);
+    meshes.forEach(function(m){
+        var geometry = new THREE.BufferGeometry();
+        var verts = new Float32Array(m.verts.flat());
+        var faces = new Uint32Array(m.faces.flat());
+        geometry.setAttribute('position', new THREE.BufferAttribute(verts, 3));
+        geometry.setIndex(new THREE.BufferAttribute(faces, 1));
+        geometry.computeVertexNormals();
 
-  scene.add(meshObj);
+        geometry.computeBoundingBox();
+        if (geometry.boundingBox && firstCenter){
+            geometry.boundingBox.getCenter(center);
+            firstCenter = false;
+        }
+
+        var material = new THREE.MeshStandardMaterial({color:m.color || 0xff6b6b, metalness:0.1, roughness:0.8, side:THREE.DoubleSide});
+        var meshObj = new THREE.Mesh(geometry, material);
+        meshObjs.push(meshObj);
+        scene.add(meshObj);
+    });
   var light = new THREE.DirectionalLight(0xffffff,1);
   light.position.set(1,1,1);
   scene.add(light);
@@ -372,8 +405,57 @@ function initThree(mesh){
   camera.up.set(0,0,1);
   camera.lookAt(new THREE.Vector3(0,0,0));
 
-  function animate(){ requestAnimationFrame(animate); meshObj.rotation.z += 0.003; renderer.render(scene,camera); }
-  animate();
+    var rotX = 0;
+    var rotY = 0;
+    var panX = 0;
+    var panY = 0;
+    var isDragging = false;
+    var lastX = 0;
+    var lastY = 0;
+    var isPanning = false;
+
+    function applyTransforms(){
+        meshObjs.forEach(function(meshObj){
+            meshObj.rotation.x = rotX;
+            meshObj.rotation.z = rotY;
+            meshObj.position.x = -center.x + panX;
+            meshObj.position.y = -center.y + panY;
+        });
+    }
+
+    renderer.domElement.addEventListener('mousedown', function(e){
+        isDragging = true;
+        lastX = e.clientX;
+        lastY = e.clientY;
+        isPanning = e.shiftKey || e.button === 2;
+    });
+    renderer.domElement.addEventListener('mousemove', function(e){
+        if (!isDragging) return;
+        var dx = e.clientX - lastX;
+        var dy = e.clientY - lastY;
+        lastX = e.clientX;
+        lastY = e.clientY;
+        if (isPanning){
+            panX += dx * 0.5;
+            panY -= dy * 0.5;
+        } else {
+            rotY += dx * 0.01;
+            rotX += dy * 0.01;
+        }
+        applyTransforms();
+    });
+    window.addEventListener('mouseup', function(){ isDragging = false; });
+    renderer.domElement.addEventListener('contextmenu', function(e){ e.preventDefault(); });
+    renderer.domElement.addEventListener('wheel', function(e){
+        e.preventDefault();
+        var delta = e.deltaY > 0 ? 1.1 : 0.9;
+        camera.position.multiplyScalar(delta);
+    }, {passive:false});
+
+    applyTransforms();
+
+    function animate(){ requestAnimationFrame(animate); renderer.render(scene,camera); }
+    animate();
 }
 
 </script>
