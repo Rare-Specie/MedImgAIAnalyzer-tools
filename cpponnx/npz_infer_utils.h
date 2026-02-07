@@ -195,14 +195,57 @@ inline void SavePredMaskNpz(const std::string &out_npz, const std::vector<int64_
   cnpy::npz_save(out_npz, "pred_mask", mask.data(), shape, "w");
 }
 
+inline bool IsValidCrop(int xL, int xR, int yL, int yR, int width, int height) {
+  return xL >= 0 && yL >= 0 && xR > xL && yR > yL && xR <= width && yR <= height;
+}
+
+template <typename T>
+inline std::vector<T> Crop2D(const T *src,
+                             int height,
+                             int width,
+                             int xL,
+                             int xR,
+                             int yL,
+                             int yR,
+                             bool fortran_order) {
+  int out_w = xR - xL;
+  int out_h = yR - yL;
+  std::vector<T> out(static_cast<size_t>(out_h) * out_w);
+  for (int y = 0; y < out_h; ++y) {
+    for (int x = 0; x < out_w; ++x) {
+      int src_x = xL + x;
+      int src_y = yL + y;
+      size_t idx = fortran_order ? static_cast<size_t>(src_x) * height + src_y
+                                  : static_cast<size_t>(src_y) * width + src_x;
+      out[static_cast<size_t>(y) * out_w + x] = src[idx];
+    }
+  }
+  return out;
+}
+
 inline void SaveNpzWithSameKeys(const std::string &src_npz,
                                 const std::string &out_npz,
                                 const std::vector<int64_t> &pred,
                                 int pred_h,
                                 int pred_w,
-                                const std::string &label_key = "label") {
+                                const std::string &label_key = "label",
+                                int crop_xL = -1,
+                                int crop_xR = -1,
+                                int crop_yL = -1,
+                                int crop_yR = -1) {
   cnpy::npz_t npz = cnpy::npz_load(src_npz);
   bool first = true;
+  bool has_valid_crop = false;
+  int crop_w = pred_w;
+  int crop_h = pred_h;
+
+  auto resolve_crop = [&](int width, int height) {
+    if (IsValidCrop(crop_xL, crop_xR, crop_yL, crop_yR, width, height)) {
+      has_valid_crop = true;
+      crop_w = crop_xR - crop_xL;
+      crop_h = crop_yR - crop_yL;
+    }
+  };
   for (const auto &kv : npz) {
     const std::string &key = kv.first;
     const cnpy::NpyArray &arr = kv.second;
@@ -213,33 +256,62 @@ inline void SaveNpzWithSameKeys(const std::string &src_npz,
       if (arr.shape.size() != 2) {
         throw std::runtime_error("label应为2D数组");
       }
+      resolve_crop(static_cast<int>(arr.shape[1]), static_cast<int>(arr.shape[0]));
       const size_t expected = arr.shape[0] * arr.shape[1];
       if (pred.size() != expected && pred.size() != static_cast<size_t>(pred_h * pred_w)) {
         throw std::runtime_error("pred与label大小不一致");
       }
-      std::vector<size_t> shape = {static_cast<size_t>(pred_h), static_cast<size_t>(pred_w)};
+      std::vector<size_t> shape = {static_cast<size_t>(crop_h), static_cast<size_t>(crop_w)};
       switch (arr.word_size) {
         case sizeof(double): {
-          std::vector<double> out(pred.size());
-          for (size_t i = 0; i < pred.size(); ++i) out[i] = static_cast<double>(pred[i]);
+          std::vector<double> out;
+          if (has_valid_crop) {
+            std::vector<double> pred_d(pred.size());
+            for (size_t i = 0; i < pred.size(); ++i) pred_d[i] = static_cast<double>(pred[i]);
+            out = Crop2D(pred_d.data(), pred_h, pred_w, crop_xL, crop_xR, crop_yL, crop_yR, false);
+          } else {
+            out.resize(pred.size());
+            for (size_t i = 0; i < pred.size(); ++i) out[i] = static_cast<double>(pred[i]);
+          }
           cnpy::npz_save(out_npz, key, out.data(), shape, mode);
           break;
         }
         case sizeof(float): {
-          std::vector<float> out(pred.size());
-          for (size_t i = 0; i < pred.size(); ++i) out[i] = static_cast<float>(pred[i]);
+          std::vector<float> out;
+          if (has_valid_crop) {
+            std::vector<float> pred_f(pred.size());
+            for (size_t i = 0; i < pred.size(); ++i) pred_f[i] = static_cast<float>(pred[i]);
+            out = Crop2D(pred_f.data(), pred_h, pred_w, crop_xL, crop_xR, crop_yL, crop_yR, false);
+          } else {
+            out.resize(pred.size());
+            for (size_t i = 0; i < pred.size(); ++i) out[i] = static_cast<float>(pred[i]);
+          }
           cnpy::npz_save(out_npz, key, out.data(), shape, mode);
           break;
         }
         case sizeof(uint16_t): {
-          std::vector<uint16_t> out(pred.size());
-          for (size_t i = 0; i < pred.size(); ++i) out[i] = static_cast<uint16_t>(pred[i]);
+          std::vector<uint16_t> out;
+          if (has_valid_crop) {
+            std::vector<uint16_t> pred_u16(pred.size());
+            for (size_t i = 0; i < pred.size(); ++i) pred_u16[i] = static_cast<uint16_t>(pred[i]);
+            out = Crop2D(pred_u16.data(), pred_h, pred_w, crop_xL, crop_xR, crop_yL, crop_yR, false);
+          } else {
+            out.resize(pred.size());
+            for (size_t i = 0; i < pred.size(); ++i) out[i] = static_cast<uint16_t>(pred[i]);
+          }
           cnpy::npz_save(out_npz, key, out.data(), shape, mode);
           break;
         }
         case sizeof(uint8_t): {
-          std::vector<uint8_t> out(pred.size());
-          for (size_t i = 0; i < pred.size(); ++i) out[i] = static_cast<uint8_t>(pred[i]);
+          std::vector<uint8_t> out;
+          if (has_valid_crop) {
+            std::vector<uint8_t> pred_u8(pred.size());
+            for (size_t i = 0; i < pred.size(); ++i) pred_u8[i] = static_cast<uint8_t>(pred[i]);
+            out = Crop2D(pred_u8.data(), pred_h, pred_w, crop_xL, crop_xR, crop_yL, crop_yR, false);
+          } else {
+            out.resize(pred.size());
+            for (size_t i = 0; i < pred.size(); ++i) out[i] = static_cast<uint8_t>(pred[i]);
+          }
           cnpy::npz_save(out_npz, key, out.data(), shape, mode);
           break;
         }
@@ -249,43 +321,95 @@ inline void SaveNpzWithSameKeys(const std::string &src_npz,
       continue;
     }
 
-    switch (arr.word_size) {
-      case sizeof(double):
-        if (arr.fortran_order) {
-          cnpy::npz_save_fortran(out_npz, key, arr.data<double>(), arr.shape, mode);
-        } else {
-          cnpy::npz_save(out_npz, key, arr.data<double>(), arr.shape, mode);
+    if (arr.shape.size() == 2) {
+      resolve_crop(static_cast<int>(arr.shape[1]), static_cast<int>(arr.shape[0]));
+      int height = static_cast<int>(arr.shape[0]);
+      int width = static_cast<int>(arr.shape[1]);
+      int out_h = has_valid_crop ? crop_h : height;
+      int out_w = has_valid_crop ? crop_w : width;
+      std::vector<size_t> shape = {static_cast<size_t>(out_h), static_cast<size_t>(out_w)};
+      switch (arr.word_size) {
+        case sizeof(double): {
+          std::vector<double> out = has_valid_crop
+                                        ? Crop2D(arr.data<double>(), height, width, crop_xL, crop_xR, crop_yL, crop_yR,
+                                                 arr.fortran_order)
+                                        : std::vector<double>(arr.data<double>(), arr.data<double>() + arr.num_vals);
+          cnpy::npz_save(out_npz, key, out.data(), shape, mode);
+          break;
         }
-        break;
-      case sizeof(float):
-        if (arr.fortran_order) {
-          cnpy::npz_save_fortran(out_npz, key, arr.data<float>(), arr.shape, mode);
-        } else {
-          cnpy::npz_save(out_npz, key, arr.data<float>(), arr.shape, mode);
+        case sizeof(float): {
+          std::vector<float> out = has_valid_crop
+                                       ? Crop2D(arr.data<float>(), height, width, crop_xL, crop_xR, crop_yL, crop_yR,
+                                                arr.fortran_order)
+                                       : std::vector<float>(arr.data<float>(), arr.data<float>() + arr.num_vals);
+          cnpy::npz_save(out_npz, key, out.data(), shape, mode);
+          break;
         }
-        break;
-      case sizeof(uint16_t):
-        if (arr.fortran_order) {
-          cnpy::npz_save_fortran(out_npz, key, arr.data<uint16_t>(), arr.shape, mode);
-        } else {
-          cnpy::npz_save(out_npz, key, arr.data<uint16_t>(), arr.shape, mode);
+        case sizeof(uint16_t): {
+          std::vector<uint16_t> out = has_valid_crop
+                                          ? Crop2D(arr.data<uint16_t>(), height, width, crop_xL, crop_xR, crop_yL, crop_yR,
+                                                   arr.fortran_order)
+                                          : std::vector<uint16_t>(arr.data<uint16_t>(), arr.data<uint16_t>() + arr.num_vals);
+          cnpy::npz_save(out_npz, key, out.data(), shape, mode);
+          break;
         }
-        break;
-      case sizeof(uint8_t):
-        if (arr.fortran_order) {
-          cnpy::npz_save_fortran(out_npz, key, arr.data<uint8_t>(), arr.shape, mode);
-        } else {
-          cnpy::npz_save(out_npz, key, arr.data<uint8_t>(), arr.shape, mode);
+        case sizeof(uint8_t): {
+          std::vector<uint8_t> out = has_valid_crop
+                                         ? Crop2D(arr.data<uint8_t>(), height, width, crop_xL, crop_xR, crop_yL, crop_yR,
+                                                  arr.fortran_order)
+                                         : std::vector<uint8_t>(arr.data<uint8_t>(), arr.data<uint8_t>() + arr.num_vals);
+          cnpy::npz_save(out_npz, key, out.data(), shape, mode);
+          break;
         }
-        break;
-      default:
-        throw std::runtime_error("不支持的npz数据类型");
+        default:
+          throw std::runtime_error("不支持的npz数据类型");
+      }
+    } else {
+      switch (arr.word_size) {
+        case sizeof(double):
+          if (arr.fortran_order) {
+            cnpy::npz_save_fortran(out_npz, key, arr.data<double>(), arr.shape, mode);
+          } else {
+            cnpy::npz_save(out_npz, key, arr.data<double>(), arr.shape, mode);
+          }
+          break;
+        case sizeof(float):
+          if (arr.fortran_order) {
+            cnpy::npz_save_fortran(out_npz, key, arr.data<float>(), arr.shape, mode);
+          } else {
+            cnpy::npz_save(out_npz, key, arr.data<float>(), arr.shape, mode);
+          }
+          break;
+        case sizeof(uint16_t):
+          if (arr.fortran_order) {
+            cnpy::npz_save_fortran(out_npz, key, arr.data<uint16_t>(), arr.shape, mode);
+          } else {
+            cnpy::npz_save(out_npz, key, arr.data<uint16_t>(), arr.shape, mode);
+          }
+          break;
+        case sizeof(uint8_t):
+          if (arr.fortran_order) {
+            cnpy::npz_save_fortran(out_npz, key, arr.data<uint8_t>(), arr.shape, mode);
+          } else {
+            cnpy::npz_save(out_npz, key, arr.data<uint8_t>(), arr.shape, mode);
+          }
+          break;
+        default:
+          throw std::runtime_error("不支持的npz数据类型");
+      }
     }
   }
 
   if (npz.find(label_key) == npz.end()) {
-    std::vector<size_t> shape = {static_cast<size_t>(pred_h), static_cast<size_t>(pred_w)};
+    int out_h = pred_h;
+    int out_w = pred_w;
     std::vector<int64_t> out = pred;
+    if (IsValidCrop(crop_xL, crop_xR, crop_yL, crop_yR, pred_w, pred_h)) {
+      out_h = crop_yR - crop_yL;
+      out_w = crop_xR - crop_xL;
+      out = Crop2D(pred.data(), pred_h, pred_w, crop_xL, crop_xR, crop_yL, crop_yR, false);
+    }
+    std::vector<size_t> shape = {static_cast<size_t>(out_h), static_cast<size_t>(out_w)};
     cnpy::npz_save(out_npz, label_key, out.data(), shape, first ? "w" : "a");
   }
 }

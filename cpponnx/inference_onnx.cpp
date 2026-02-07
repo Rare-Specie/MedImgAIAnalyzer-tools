@@ -15,6 +15,10 @@ struct Args {
   std::string output;
   int img_size = 224;
   int out_size = 512;
+  int semi_xL = -1;
+  int semi_xR = -1;
+  int semi_yL = -1;
+  int semi_yR = -1;
 };
 
 static Args ParseArgs(int argc, char **argv) {
@@ -38,10 +42,19 @@ static Args ParseArgs(int argc, char **argv) {
       args.img_size = std::stoi(require_value(key));
     } else if (key == "--out-size") {
       args.out_size = std::stoi(require_value(key));
+    } else if (key == "--semi-xL") {
+      args.semi_xL = std::stoi(require_value(key));
+    } else if (key == "--semi-xR") {
+      args.semi_xR = std::stoi(require_value(key));
+    } else if (key == "--semi-yL") {
+      args.semi_yL = std::stoi(require_value(key));
+    } else if (key == "--semi-yR") {
+      args.semi_yR = std::stoi(require_value(key));
     } else if (key == "--help" || key == "-h") {
       std::cout
           << "用法: inference_onnx --input <npz> [--onnx <model>] [--output <dir>] "
-             "[--img-size 224] [--out-size 512]\n";
+             "[--img-size 224] [--out-size 512] "
+             "[--semi-xL N --semi-xR N --semi-yL N --semi-yR N]\n";
       std::exit(0);
     } else {
       throw std::runtime_error("未知参数: " + key);
@@ -231,9 +244,26 @@ int main(int argc, char **argv) {
     std::vector<int64_t> pred_up =
       ResizeMaskNearestFromInt(pred, static_cast<int>(out_h), static_cast<int>(out_w), args.out_size);
 
+    bool has_crop = IsValidCrop(args.semi_xL, args.semi_xR, args.semi_yL, args.semi_yR,
+                                args.out_size, args.out_size);
+    std::vector<int64_t> pred_out = pred_up;
+    if (has_crop) {
+      pred_out = Crop2D(pred_up.data(), args.out_size, args.out_size,
+                        args.semi_xL, args.semi_xR, args.semi_yL, args.semi_yR, false);
+    }
+
     std::string base = std::filesystem::path(args.input).stem().string();
     std::string out_npz = (std::filesystem::path(out_dir) / ("inference_" + base + "_onnxcpp.npz")).string();
-    SaveNpzWithSameKeys(args.input, out_npz, pred_up, args.out_size, args.out_size);
+    SaveNpzWithSameKeys(args.input,
+              out_npz,
+              pred_up,
+              args.out_size,
+              args.out_size,
+              "label",
+              args.semi_xL,
+              args.semi_xR,
+              args.semi_yL,
+              args.semi_yR);
 
     if (data.label.has_value()) {
       std::vector<double> lab = std::move(*data.label);
@@ -242,7 +272,11 @@ int main(int argc, char **argv) {
       for (size_t i = 0; i < lab_up.size(); ++i) {
         lab_up_i64[i] = static_cast<int64_t>(std::lround(lab_up[i]));
       }
-      auto [dice, iou] = EvalDiceIou(pred_up, lab_up_i64);
+      if (has_crop) {
+        lab_up_i64 = Crop2D(lab_up_i64.data(), args.out_size, args.out_size,
+                            args.semi_xL, args.semi_xR, args.semi_yL, args.semi_yR, false);
+      }
+      auto [dice, iou] = EvalDiceIou(pred_out, lab_up_i64);
       std::cout << "简单评估: dice=" << dice << ", iou=" << iou << "\n";
     }
 
