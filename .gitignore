@@ -7,3 +7,6 @@ U-SAM/weight
 *.onnx
 *.onnx.data
 cpponnx/inference_onnx
+pyproject.toml
+.python-version
+
