@@ -3465,11 +3465,9 @@ HTML_TEMPLATE = r"""<!doctype html>
 <body>
   <main class="page">
     <div class="title">楼上的下来</div>
-    <div class="subtitle">每行展示 2 个模型，标题为 GLB 文件名；支持旋转/平移/缩放、重置视角、自动旋转、线框、背景切换、导出模型。</div>
     <div class="global-controls">
       <button id="sync-rotate-btn">同步旋转</button>
       <button id="sync-zoom-btn">同步缩放</button>
-      <span class="global-tip">开启后不会重置现有状态，仅在后续操作时同步</span>
     </div>
     <div id="boot-error" class="error" style="display:none"></div>
     <section id="grid" class="grid"></section>
@@ -3504,7 +3502,7 @@ HTML_TEMPLATE = r"""<!doctype html>
     }}
 
     function rewriteThreeImport(code, threeUrl) {{
-      return code.replace(/from\\s+['\"]three['\"]\\s*;/g, `from '${{threeUrl}}';`);
+      return code.replace(/from\s+(['"])three\1/g, `from '${{threeUrl}}'`);
     }}
 
     async function loadThreeDeps() {{
@@ -3529,7 +3527,7 @@ HTML_TEMPLATE = r"""<!doctype html>
       const bufferUtilsUrl = toBlobUrl(rewriteThreeImport(bufferUtilsRaw, threeUrl));
       const orbitUrl = toBlobUrl(rewriteThreeImport(orbitSourceRaw, threeUrl));
       const gltfSource = rewriteThreeImport(gltfSourceRaw, threeUrl)
-        .replace(/from\s+['"]\.\.\/utils\/BufferGeometryUtils\.js['"]\s*;/g, `from '${{bufferUtilsUrl}}';`);
+        .replace(/from\s+(['"])\.\.\/utils\/BufferGeometryUtils\.js\1/g, `from '${{bufferUtilsUrl}}'`);
       const gltfUrl = toBlobUrl(gltfSource);
 
       const [THREE, orbitModule, gltfModule] = await Promise.all([
@@ -3963,7 +3961,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         '--title',
-        default='GLB 模型浏览',
+        default='搞核酸',
         help='输出 HTML 页面标题。',
     )
     parser.add_argument(
