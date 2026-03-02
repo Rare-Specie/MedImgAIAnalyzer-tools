@@ -11,3 +11,4 @@ pyproject.toml
 .python-version
 threejs
 packed_glb_viewer.html
+packed_glb_viewer_test.html
