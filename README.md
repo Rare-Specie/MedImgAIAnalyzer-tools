@@ -19,6 +19,7 @@
 - [PyTorch 环境检测脚本](ifpytorch.py)
 - [支持prompt mode 3的onnx/pth推理脚本](New_infer_mode3.py)
 - [多个GLB转为html 支持同步旋转缩放](pack_glb_to_html.py)
+- [NPZ 转 GLB 2d-HTML 3d-HTML all in one 工具](all_in_one_npz_glb_tool.py)
 
 
 ## medical_image_converter.py 用法
