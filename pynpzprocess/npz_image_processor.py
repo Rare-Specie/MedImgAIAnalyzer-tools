@@ -133,19 +133,48 @@ def process_image(
     crop: Tuple[int, int, int, int] | None,
     contrast: float,
     gamma: float,
+    preserve_resolution: bool = False,
+    orig_shape: Tuple[int, int] | None = None,
 ) -> ArrayLike:
     if image.ndim == 2:
-        return _process_2d_or_hwc(image, scale_x, scale_y, rotate_deg, crop, contrast, gamma)
+        out = _process_2d_or_hwc(image, scale_x, scale_y, rotate_deg, crop, contrast, gamma)
+        if preserve_resolution and orig_shape is not None and out.shape != orig_shape:
+            # 若执行了裁切并要求恢复分辨率，则把裁切结果放回原位；否则重采样回原始大小
+            if crop is not None:
+                canvas = np.zeros(orig_shape, dtype=out.dtype)
+                x, y, cw, ch = _clip_crop_rect(*crop, width=orig_shape[1], height=orig_shape[0])
+                canvas[y : y + ch, x : x + cw, ...] = out
+                out = canvas
+            else:
+                out = _resize_to_shape(out, orig_shape, interp=cv2.INTER_LINEAR)
+        return out
 
     if image.ndim == 3:
         # HWC 彩色图
         if image.shape[-1] in (1, 3, 4):
-            return _process_2d_or_hwc(image, scale_x, scale_y, rotate_deg, crop, contrast, gamma)
+            out = _process_2d_or_hwc(image, scale_x, scale_y, rotate_deg, crop, contrast, gamma)
+            if preserve_resolution and orig_shape is not None and out.shape[:2] != orig_shape:
+                if crop is not None:
+                    canvas = np.zeros((orig_shape[0], orig_shape[1], out.shape[2]), dtype=out.dtype)
+                    x, y, cw, ch = _clip_crop_rect(*crop, width=orig_shape[1], height=orig_shape[0])
+                    canvas[y : y + ch, x : x + cw, ...] = out
+                    out = canvas
+                else:
+                    out = _resize_to_shape(out, orig_shape, interp=cv2.INTER_LINEAR)
+            return out
 
         # CHW 彩色图
         if image.shape[0] in (1, 3, 4):
             hwc = np.transpose(image, (1, 2, 0))
             proc = _process_2d_or_hwc(hwc, scale_x, scale_y, rotate_deg, crop, contrast, gamma)
+            if preserve_resolution and orig_shape is not None and proc.shape[:2] != orig_shape:
+                if crop is not None:
+                    canvas = np.zeros((orig_shape[0], orig_shape[1], proc.shape[2]), dtype=proc.dtype)
+                    x, y, cw, ch = _clip_crop_rect(*crop, width=orig_shape[1], height=orig_shape[0])
+                    canvas[y : y + ch, x : x + cw, ...] = proc
+                    proc = canvas
+                else:
+                    proc = _resize_to_shape(proc, orig_shape, interp=cv2.INTER_LINEAR)
             return np.transpose(proc, (2, 0, 1))
 
         # 默认按 (N, H, W) 逐切片处理
@@ -153,7 +182,14 @@ def process_image(
             _process_2d_or_hwc(s, scale_x, scale_y, rotate_deg, crop, contrast, gamma)
             for s in image
         ]
-        return np.stack(slices, axis=0)
+        stacked = np.stack(slices, axis=0)
+        if preserve_resolution and orig_shape is not None and stacked.shape[1:] != orig_shape:
+            # resize each slice back
+            resized = [
+                _resize_to_shape(s, orig_shape, interp=cv2.INTER_LINEAR) for s in stacked
+            ]
+            return np.stack(resized, axis=0)
+        return stacked
 
     raise ValueError(f"不支持的 image 维度: {image.ndim}，仅支持 2D 或 3D")
 
@@ -224,6 +260,28 @@ def _process_label(
     return out.astype(orig_dtype)
 
 
+def _resize_to_shape(arr: ArrayLike, target_shape: Tuple[int, ...], interp: int) -> ArrayLike:
+    # target_shape: (H, W) or (H, W, C) or (C, H, W)
+    if arr.ndim == 2:
+        h, w = target_shape[0], target_shape[1]
+        return cv2.resize(arr, (w, h), interpolation=interp)
+    if arr.ndim == 3:
+        # HWC
+        if arr.shape[-1] in (1, 3, 4):
+            h, w = target_shape[0], target_shape[1]
+            return cv2.resize(arr, (w, h), interpolation=interp)
+        # CHW -> transpose
+        if arr.shape[0] in (1, 3, 4):
+            hwc = np.transpose(arr, (1, 2, 0))
+            h, w = target_shape[0], target_shape[1]
+            hwc = cv2.resize(hwc, (w, h), interpolation=interp)
+            return np.transpose(hwc, (2, 0, 1))
+        # stack of slices
+        slices = [cv2.resize(s, (target_shape[1], target_shape[0]), interpolation=interp) for s in arr]
+        return np.stack(slices, axis=0)
+    return arr
+
+
 def _derive_output_path(input_path: Path, output_path: str | None) -> Path:
     if output_path:
         return Path(output_path)
@@ -247,6 +305,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--contrast", type=float, default=1.0, help="对比度倍率，1.0 为不变")
     parser.add_argument("--gamma", type=float, default=1.0, help="伽马值，1.0 为不变")
+    parser.add_argument(
+        "--preserve-resolution",
+        action="store_true",
+        help="处理后将结果恢复为输入的原始分辨率（几何变换后重采样或将裁切放回原位）",
+    )
     return parser
 
 
@@ -264,6 +327,8 @@ def main() -> None:
         if "image" not in data:
             raise SystemExit(f"输入 npz 不包含 image 键: {input_path}")
 
+        orig_shape = data["image"].shape
+
         processed = process_image(
             data["image"],
             scale_x=args.scale_x,
@@ -272,6 +337,8 @@ def main() -> None:
             crop=tuple(args.crop) if args.crop is not None else None,
             contrast=args.contrast,
             gamma=args.gamma,
+            preserve_resolution=args.preserve_resolution,
+            orig_shape=orig_shape,
         )
 
         save_dict = {k: data[k] for k in keys}
@@ -289,6 +356,17 @@ def main() -> None:
                         rotate_deg=args.rotate,
                         crop=tuple(args.crop) if args.crop is not None else None,
                     )
+                    # 若要求保留分辨率，需要把 label 恢复到原始形状
+                    if args.preserve_resolution and processed_label.shape != orig_shape:
+                        # 若是裁切操作且 crop 给出，则把裁切结果放回原位
+                        if args.crop is not None:
+                            canvas = np.zeros(orig_shape, dtype=processed_label.dtype)
+                            x, y, cw, ch = _clip_crop_rect(*tuple(args.crop), width=orig_shape[1], height=orig_shape[0])
+                            canvas[y : y + ch, x : x + cw, ...] = processed_label
+                            processed_label = canvas
+                        else:
+                            processed_label = _resize_to_shape(processed_label, orig_shape, interp=cv2.INTER_NEAREST)
+
                     save_dict["label"] = processed_label
                 except Exception:
                     # 若处理失败则保留原始 label
