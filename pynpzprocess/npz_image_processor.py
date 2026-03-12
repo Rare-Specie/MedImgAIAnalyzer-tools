@@ -139,14 +139,9 @@ def process_image(
     if image.ndim == 2:
         out = _process_2d_or_hwc(image, scale_x, scale_y, rotate_deg, crop, contrast, gamma)
         if preserve_resolution and orig_shape is not None and out.shape != orig_shape:
-            # 若执行了裁切并要求恢复分辨率，则把裁切结果放回原位；否则重采样回原始大小
-            if crop is not None:
-                canvas = np.zeros(orig_shape, dtype=out.dtype)
-                x, y, cw, ch = _clip_crop_rect(*crop, width=orig_shape[1], height=orig_shape[0])
-                canvas[y : y + ch, x : x + cw, ...] = out
-                out = canvas
-            else:
-                out = _resize_to_shape(out, orig_shape, interp=cv2.INTER_LINEAR)
+            # 若执行了裁切并要求恢复分辨率，使用缩放将裁切区域放大填满原始分辨率；
+            # 否则重采样回原始大小
+            out = _resize_to_shape(out, orig_shape, interp=cv2.INTER_LINEAR)
         return out
 
     if image.ndim == 3:
@@ -155,10 +150,7 @@ def process_image(
             out = _process_2d_or_hwc(image, scale_x, scale_y, rotate_deg, crop, contrast, gamma)
             if preserve_resolution and orig_shape is not None and out.shape[:2] != orig_shape:
                 if crop is not None:
-                    canvas = np.zeros((orig_shape[0], orig_shape[1], out.shape[2]), dtype=out.dtype)
-                    x, y, cw, ch = _clip_crop_rect(*crop, width=orig_shape[1], height=orig_shape[0])
-                    canvas[y : y + ch, x : x + cw, ...] = out
-                    out = canvas
+                    out = _resize_to_shape(out, orig_shape, interp=cv2.INTER_LINEAR)
                 else:
                     out = _resize_to_shape(out, orig_shape, interp=cv2.INTER_LINEAR)
             return out
@@ -169,10 +161,7 @@ def process_image(
             proc = _process_2d_or_hwc(hwc, scale_x, scale_y, rotate_deg, crop, contrast, gamma)
             if preserve_resolution and orig_shape is not None and proc.shape[:2] != orig_shape:
                 if crop is not None:
-                    canvas = np.zeros((orig_shape[0], orig_shape[1], proc.shape[2]), dtype=proc.dtype)
-                    x, y, cw, ch = _clip_crop_rect(*crop, width=orig_shape[1], height=orig_shape[0])
-                    canvas[y : y + ch, x : x + cw, ...] = proc
-                    proc = canvas
+                    proc = _resize_to_shape(proc, orig_shape, interp=cv2.INTER_LINEAR)
                 else:
                     proc = _resize_to_shape(proc, orig_shape, interp=cv2.INTER_LINEAR)
             return np.transpose(proc, (2, 0, 1))
