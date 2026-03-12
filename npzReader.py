@@ -358,36 +358,109 @@ def generate_html_report(path: str, data: bytes, out_path: str) -> None:
 
 def main():
     parser = argparse.ArgumentParser(description='NZP 阅读器 — 导出 NZP 到 HTML 报告')
-    parser.add_argument('path', nargs='?', help='NZP 文件路径')
-    parser.add_argument('-o', '--output', help='输出 HTML 文件路径 (默认为 <input>.nzp.html)')
-    parser.add_argument('--open', action='store_true', help='生成后自动在默认浏览器中打开')
+    parser.add_argument('path', nargs='?', help='NZP 文件路径或目录（支持递归）')
+    parser.add_argument('-o', '--output', help='输出 HTML 文件路径或输出目录 (默认为 <input>.nzp.html)')
+    parser.add_argument('--open', action='store_true', help='生成后自动在默认浏览器中打开 (仅当单个文件时生效)')
     args = parser.parse_args()
 
-    path = args.path
-    if not path:
+    # sanitize input path: remove surrounding quotes and whitespace
+    def sanitize_path(p: str) -> str:
+        if not isinstance(p, str):
+            return p
+        s = p.strip()
+        # remove surrounding single or double quotes if present
+        if (s.startswith("'") and s.endswith("'")) or (s.startswith('"') and s.endswith('"')):
+            s = s[1:-1].strip()
+        # also strip surrounding backticks
+        if s.startswith('`') and s.endswith('`'):
+            s = s[1:-1].strip()
+        return s
+
+    interactive_mode = args.path is None
+
+    def process_path(path: str):
+        path = sanitize_path(path)
+        # 如果是目录，则递归处理目录下所有文件
+        if os.path.isdir(path):
+            out_base = args.output
+            if out_base and not os.path.exists(out_base):
+                try:
+                    os.makedirs(out_base, exist_ok=True)
+                except Exception as e:
+                    print(f'无法创建输出目录 {out_base}: {e}')
+                    return
+
+            print(f'正在递归分析目录: {path} ...')
+            for root, dirs, files in os.walk(path):
+                for fname in files:
+                    file_path = os.path.join(root, fname)
+                    try:
+                        data = read_bytes(file_path)
+                    except Exception as e:
+                        print(f'无法读取 {file_path}: {e}')
+                        continue
+
+                    # 计算相对于输入目录的相对路径，以在输出中保留结构
+                    rel = os.path.relpath(file_path, start=path)
+                    if out_base:
+                        out_path = os.path.join(out_base, rel + '.html')
+                        os.makedirs(os.path.dirname(out_path), exist_ok=True)
+                    else:
+                        out_path = file_path + '.html'
+
+                    try:
+                        generate_html_report(file_path, data, out_path)
+                        print(f'已生成: {out_path}')
+                    except Exception as e:
+                        print(f'生成报告失败: {file_path}: {e}')
+            print('批量处理完成。')
+            return
+
+        # 单文件处理
+        if not os.path.isfile(path):
+            print(f'文件不存在: {path}')
+            return
+
         try:
-            path = input('请输入 NZP 文件路径: ').strip()
-        except EOFError:
-            print('没有提供文件路径，退出。')
-            sys.exit(1)
+            data = read_bytes(path)
+        except Exception as e:
+            print(f'无法读取 {path}: {e}')
+            return
 
-    if not os.path.isfile(path):
-        print(f'文件不存在: {path}')
-        sys.exit(1)
+        out_path = args.output if args.output else path + '.html'
 
-    data = read_bytes(path)
+        print('正在分析，可能需要一些时间...')
+        try:
+            generate_html_report(path, data, out_path)
+            print(f'HTML 报告已生成: {out_path}')
+            if args.open:
+                webbrowser.open('file://' + os.path.abspath(out_path))
+        except Exception as e:
+            print(f'生成报告时出错: {e}')
+            return
 
-    out_path = args.output if args.output else path + '.html'
-
-    print('正在分析，可能需要一些时间...')
-    try:
-        generate_html_report(path, data, out_path)
-        print(f'HTML 报告已生成: {out_path}')
-        if args.open:
-            webbrowser.open('file://' + os.path.abspath(out_path))
-    except Exception as e:
-        print(f'生成报告时出错: {e}')
-        sys.exit(1)
+    if interactive_mode:
+        print('进入交互模式，输入文件或目录路径，留空或输入 quit/exit 退出。')
+        while True:
+            try:
+                user_input = input('请输入 NZP 文件路径: ')
+            except EOFError:
+                print('\n退出。')
+                break
+            if user_input is None:
+                break
+            s = user_input.strip()
+            if s == '':
+                print('退出交互模式。')
+                break
+            if s.lower() in ('quit', 'exit', 'q'):
+                print('退出交互模式。')
+                break
+            process_path(s)
+    else:
+        # 非交互：处理一次并退出
+        path = sanitize_path(args.path)
+        process_path(path)
 
 
 if __name__ == '__main__':
