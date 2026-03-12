@@ -158,6 +158,72 @@ def process_image(
     raise ValueError(f"不支持的 image 维度: {image.ndim}，仅支持 2D 或 3D")
 
 
+def _process_label(
+    label: ArrayLike,
+    scale_x: float,
+    scale_y: float,
+    rotate_deg: float,
+    crop: Tuple[int, int, int, int] | None,
+) -> ArrayLike:
+    # 对 label 仅做几何变换，使用最近邻插值以保持标签值
+    if scale_x <= 0 or scale_y <= 0:
+        raise ValueError("scale-x 和 scale-y 必须大于 0")
+
+    orig_dtype = label.dtype
+    out = label.astype(np.float32)
+
+    if scale_x != 1.0 or scale_y != 1.0:
+        # 对单通道或多通道同样处理
+        if out.ndim == 2:
+            out = cv2.resize(out, dsize=None, fx=scale_x, fy=scale_y, interpolation=cv2.INTER_NEAREST)
+        elif out.ndim == 3 and out.shape[-1] in (1, 3, 4):
+            out = cv2.resize(out, dsize=None, fx=scale_x, fy=scale_y, interpolation=cv2.INTER_NEAREST)
+        elif out.ndim == 3 and out.shape[0] in (1, 3, 4):
+            hwc = np.transpose(out, (1, 2, 0))
+            hwc = cv2.resize(hwc, dsize=None, fx=scale_x, fy=scale_y, interpolation=cv2.INTER_NEAREST)
+            out = np.transpose(hwc, (2, 0, 1))
+        else:
+            # treat as stack of slices
+            slices = [
+                cv2.resize(s.astype(np.float32), dsize=None, fx=scale_x, fy=scale_y, interpolation=cv2.INTER_NEAREST)
+                for s in out
+            ]
+            out = np.stack(slices, axis=0)
+
+    if rotate_deg != 0.0:
+        if out.ndim == 2:
+            h, w = out.shape[:2]
+            center = (w / 2.0, h / 2.0)
+            mat = cv2.getRotationMatrix2D(center, rotate_deg, 1.0)
+            out = cv2.warpAffine(out, mat, (w, h), flags=cv2.INTER_NEAREST, borderMode=cv2.BORDER_REFLECT)
+        elif out.ndim == 3 and out.shape[-1] in (1, 3, 4):
+            h, w = out.shape[:2]
+            center = (w / 2.0, h / 2.0)
+            mat = cv2.getRotationMatrix2D(center, rotate_deg, 1.0)
+            out = cv2.warpAffine(out, mat, (w, h), flags=cv2.INTER_NEAREST, borderMode=cv2.BORDER_REFLECT)
+        elif out.ndim == 3 and out.shape[0] in (1, 3, 4):
+            hwc = np.transpose(out, (1, 2, 0))
+            h, w = hwc.shape[:2]
+            center = (w / 2.0, h / 2.0)
+            mat = cv2.getRotationMatrix2D(center, rotate_deg, 1.0)
+            hwc = cv2.warpAffine(hwc, mat, (w, h), flags=cv2.INTER_NEAREST, borderMode=cv2.BORDER_REFLECT)
+            out = np.transpose(hwc, (2, 0, 1))
+        else:
+            slices = []
+            for s in out:
+                h, w = s.shape[:2]
+                center = (w / 2.0, h / 2.0)
+                mat = cv2.getRotationMatrix2D(center, rotate_deg, 1.0)
+                slices.append(cv2.warpAffine(s, mat, (w, h), flags=cv2.INTER_NEAREST, borderMode=cv2.BORDER_REFLECT))
+            out = np.stack(slices, axis=0)
+
+    if crop is not None:
+        x, y, cw, ch = _clip_crop_rect(*crop, width=out.shape[1], height=out.shape[0])
+        out = out[y : y + ch, x : x + cw, ...]
+
+    return out.astype(orig_dtype)
+
+
 def _derive_output_path(input_path: Path, output_path: str | None) -> Path:
     if output_path:
         return Path(output_path)
@@ -210,6 +276,23 @@ def main() -> None:
 
         save_dict = {k: data[k] for k in keys}
         save_dict["image"] = processed
+
+        # 如果存在 label 并且有几何变换（scale/rotate/crop），对 label 做相同的几何变换
+        if "label" in data:
+            geom_changed = (args.scale_x != 1.0) or (args.scale_y != 1.0) or (args.rotate != 0.0) or (args.crop is not None)
+            if geom_changed:
+                try:
+                    processed_label = _process_label(
+                        data["label"],
+                        scale_x=args.scale_x,
+                        scale_y=args.scale_y,
+                        rotate_deg=args.rotate,
+                        crop=tuple(args.crop) if args.crop is not None else None,
+                    )
+                    save_dict["label"] = processed_label
+                except Exception:
+                    # 若处理失败则保留原始 label
+                    pass
 
     np.savez_compressed(output_path, **save_dict)
     print(f"处理完成: {output_path}")
